@@ -7,6 +7,7 @@ pub trait IStaker<T> {
     fn execute(ref self: T);
     fn stake(ref self: T, amount: u256);
     fn withdraw(ref self: T);
+    fn on_receive(ref self: T, amount: u256);
     // Getters
     fn balances(self: @T, account: ContractAddress) -> u256;
     fn completed(self: @T) -> bool;
@@ -60,26 +61,25 @@ pub mod Staker {
     ) {
         self.eth_token_dispatcher.write(IERC20CamelDispatcher { contract_address: eth_contract });
         self.external_contract_address.write(external_contract_address);
-        self.deadline.write(get_block_timestamp() + 1);
+        self.deadline.write(get_block_timestamp() + (72*60*60));
 
     }
 
     #[abi(embed_v0)]
     impl StakerImpl of IStaker<ContractState> {
-        // ToDo Checkpoint 3: Assert that the staking period has not ended
         fn stake(
             ref self: ContractState, amount: u256,
         ) { 
             let sender = get_caller_address();
             let contract_address = get_contract_address();
-            
             let token = self.eth_token_dispatcher();
             let sender_balance = token.balanceOf(sender);
             assert(sender_balance >= amount, 'Insufficient balance');
             
             let allowance = token.allowance(sender, contract_address);
             assert(allowance >= amount, 'Insufficient allowance');
-
+            
+            assert!(self.time_left()>0, "Staking period has ended");
             token.transferFrom(sender, contract_address, amount);
             
             // Update internal balances
@@ -90,15 +90,13 @@ pub mod Staker {
             self.emit(Stake { sender, amount });
         }
 
-        // Function to execute the transfer or allow withdrawals after the deadline
-        // ToDo Checkpoint 3: Assert that the staking period has ended
-        // ToDo Checkpoint 3: Protect the function calling `not_completed` function before the
-        // execution
         fn execute(ref self: ContractState) {
+            self.not_completed();
             assert!(self.time_left()<=0, "Staking period has not ended");
+
             let total_balance = self.total_balance();
             let threshold = self.threshold();
-            assert!(total_balance >= threshold, "Total balance is less than threshold");
+
             if total_balance >= threshold {
                 self.complete_transfer(total_balance);
             } else {
@@ -106,8 +104,23 @@ pub mod Staker {
             }
         }
 
-        // ToDo Checkpoint 3: Implement your `withdraw` function here
-        fn withdraw(ref self: ContractState) {}
+        fn withdraw(ref self: ContractState) {
+            self.not_completed();
+            assert!(self.open_for_withdraw(), "Withdraw is not open");
+            let sender = get_caller_address();
+            let amount = self.balances.read(sender);
+            assert!(amount > 0, "No balance to withdraw");
+
+            let token = self.eth_token_dispatcher();
+            token.transfer(sender, amount);
+            self.balances.write(sender, 0);
+            self.balances.write(get_contract_address(), self.total_balance() - amount);
+
+        }
+
+        fn on_receive(ref self: ContractState, amount: u256) {
+            self.stake(amount);
+        }
 
         fn balances(self: @ContractState, account: ContractAddress) -> u256 {
             self.balances.read(account)
@@ -136,10 +149,9 @@ pub mod Staker {
         fn example_external_contract(self: @ContractState) -> ContractAddress {
             self.external_contract_address.read()
         }
-        // Read Function to check if the external contract is completed.
-        // ToDo Checkpoint 3: Implement your completed function here
+
         fn completed(self: @ContractState) -> bool {
-            false
+            IExampleExternalContractDispatcher{contract_address: self.example_external_contract()}.completed()
         }
 
         fn time_left(self: @ContractState) -> u64 {
@@ -164,7 +176,8 @@ pub mod Staker {
             IExampleExternalContractDispatcher{contract_address: external_contract}.complete();
             self.balances.write(get_contract_address(), 0)
         }
-        // ToDo Checkpoint 3: Implement your not_completed function here
-        fn not_completed(ref self: ContractState) {}
+        fn not_completed(ref self: ContractState) {
+            assert!(!self.completed(), "External contract already completed");
+        }
     }
 }
