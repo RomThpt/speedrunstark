@@ -21,7 +21,7 @@ mod Vendor {
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
 
-    // ToDo Checkpoint 2: Define const TokensPerEth
+    const TokensPerEth: u256 = 100;
 
     #[abi(embed_v0)]
     impl OwnableImpl = OwnableComponent::OwnableImpl<ContractState>;
@@ -56,7 +56,6 @@ mod Vendor {
     struct SellTokens {}
 
     #[constructor]
-    // Todo Checkpoint 2: Edit the constructor to initialize the owner of the contract.
     fn constructor(
         ref self: ContractState,
         eth_token_address: ContractAddress,
@@ -64,25 +63,42 @@ mod Vendor {
     ) {
         self.eth_token.write(IERC20CamelDispatcher { contract_address: eth_token_address });
         self.your_token.write(IYourTokenDispatcher { contract_address: your_token_address });
-        // ToDo Checkpoint 2: Initialize the owner of the contract here.
+        let caller = get_caller_address();
+        self.ownable.initializer(caller);
     }
     #[abi(embed_v0)]
     impl VendorImpl of IVendor<ContractState> {
-        // ToDo Checkpoint 2: Implement your function buy_tokens here.
         fn buy_tokens(
             ref self: ContractState, eth_amount_wei: u256,
         ) { // Note: In UI and Debug contract `buyer` should call `approve`` before to `transfer` the amount to the `Vendor` contract.
+            let caller = get_caller_address();
+            let eth_token = self.eth_token.read();
+            let eth_balance = eth_token.balanceOf(caller);
+            let tokens_amount = eth_amount_wei / self.tokens_per_eth();
+            assert!(eth_balance >= eth_amount_wei, "Not enough ETH balance");
+            eth_token.transferFrom(caller, get_contract_address(), eth_amount_wei);
+            let your_token = self.your_token.read();
+            your_token.transfer(caller, tokens_amount);
+            self.emit(BuyTokens {
+                buyer: caller,
+                eth_amount: eth_amount_wei,
+                tokens_amount,
+            });
         }
 
-        // ToDo Checkpoint 2: Implement your function withdraw here.
-        fn withdraw(ref self: ContractState) {}
+        fn withdraw(ref self: ContractState) {
+            let caller = get_caller_address();
+            assert!(self.ownable.owner() == caller, "Only owner can withdraw");
+            let eth_token = self.eth_token.read();
+            let eth_balance = eth_token.balanceOf(get_contract_address());
+            eth_token.transfer(caller, eth_balance);
+        }
 
         // ToDo Checkpoint 3: Implement your function sell_tokens here.
         fn sell_tokens(ref self: ContractState, amount_tokens: u256) {}
 
-        // ToDo Checkpoint 2: Modify to return the amount of tokens per 1 ETH.
         fn tokens_per_eth(self: @ContractState) -> u256 {
-            0
+            TokensPerEth
         }
 
         fn your_token(self: @ContractState) -> ContractAddress {
